@@ -1,4 +1,4 @@
-name: ReelToTube Processor
+name: Shree Ricka
 
 on:
   workflow_dispatch:
@@ -134,8 +134,6 @@ jobs:
             opencv-python-headless \
             numpy \
             Pillow \
-            ImageHash \
-            requests \
             google-api-python-client \
             google-auth-httplib2 \
             google-auth-oauthlib
@@ -547,7 +545,8 @@ jobs:
             "artist": "",
             "best_moment": "",
             "category": "",
-            "keywords": ""
+            "keywords": "",
+            "pov_text": ""
           }
 
           TITLE:
@@ -607,6 +606,40 @@ jobs:
           15-25 relevant keywords.
           Comma-separated.
 
+          POV_TEXT:
+
+          Create ONE short, catchy on-screen caption for this dance Reel.
+          It must feel like a polished Instagram/YouTube Reel caption,
+          not a long description.
+
+          LANGUAGE:
+          - Natural Hinglish written in Roman/Latin script.
+          - Keep the wording conversational and easy for Indian viewers.
+
+          STYLE:
+          - Relatable, witty, smooth and scroll-stopping.
+          - Make it fit the actual dance movement, expression, vibe, situation,
+            or confidently identified song/moment.
+          - Prefer the style of captions such as:
+            "Shuffling was smooth... Agree?"
+            "Beat drop hua... mood automatically ON"
+            "Jab steps clean ho, vibe alag hi hoti hai"
+          - These are style examples only. Do not copy them unless they
+            genuinely fit the video.
+
+          STRICT RULES:
+          - Maximum 8 words when possible; absolute maximum 10 words.
+          - Maximum 55 characters.
+          - ONE short sentence/phrase only.
+          - Do NOT write "POV:" at the beginning.
+          - Do NOT write a paragraph or explain the video.
+          - Do NOT use ALL CAPS.
+          - Do NOT use emojis.
+          - Do NOT invent song names, lyrics, artists, people, places or facts.
+          - If the song is confidently identified, a subtle song-related
+            caption is allowed; otherwise keep it movement/vibe related.
+          - Return ONLY the caption text, with no quotes and no extra commentary.
+
           FINAL CHECK:
 
           - title ends with #Shorts
@@ -665,7 +698,8 @@ jobs:
               "artist",
               "best_moment",
               "category",
-              "keywords"
+              "keywords",
+              "pov_text"
           ]
 
 
@@ -852,1283 +886,206 @@ jobs:
 
 
       # =========================================================
-      # 12. CHECK YOUTUBE DUPLICATE
+      # 12. GENERATE + ADD AI HINGLISH POV OVERLAY
       # =========================================================
-      - name: Check YouTube for duplicate
-        id: duplicate
-        env:
-          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+      - name: Add AI Hinglish POV overlay
         run: |
-
-          cat > youtube_duplicate_check.py <<'PY'
-
-          import os
+          python3 - <<'PY'
           import json
           import re
-          import sys
-          import subprocess
-          import tempfile
-          import shutil
-          from difflib import SequenceMatcher
+          import textwrap
+          from pathlib import Path
 
-          import cv2
-          import imagehash
+          from PIL import Image, ImageDraw, ImageFont
 
-          from PIL import Image
-          import requests
+          METADATA = Path("metadata.json")
+          OUTPUT_DIR = Path("output")
+          OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-          from googleapiclient.discovery import build
-
-
-          API_KEY = os.environ.get(
-              "YOUTUBE_API_KEY"
-          )
-
-
-          if not API_KEY:
-
-              print(
-                  "ERROR: YOUTUBE_API_KEY GitHub Secret is missing."
-              )
-
-              sys.exit(1)
-
-
-          METADATA_FILE = "metadata.json"
-          VIDEO_FILE = "output/youtube_short.mp4"
-
-
-          with open(
-              METADATA_FILE,
-              "r",
-              encoding="utf-8"
-          ) as f:
-
+          with METADATA.open("r", encoding="utf-8") as f:
               metadata = json.load(f)
 
+          pov = str(metadata.get("pov_text", "")).strip()
 
-          title = str(
-              metadata.get("title", "")
-          ).strip()
+          # Remove accidental quotes / labels and normalize whitespace.
+          pov = pov.strip("\"' ")
+          pov = re.sub(r"^\s*(POV|POV TEXT)\s*[:\-]\s*", "", pov, flags=re.I)
+          pov = re.sub(r"[\r\n]+", " ", pov)
+          pov = re.sub(r"\s+", " ", pov).strip()
 
-          description = str(
-              metadata.get("description", "")
-          ).strip()
+          # Keep only characters that are safe for the caption renderer.
+          pov = "".join(
+              ch for ch in pov
+              if ch.isprintable()
+          )
+          pov = re.sub(r"[^\x20-\x7E]", "", pov)
+          pov = re.sub(r"\s+", " ", pov).strip()
 
-          song_name = str(
-              metadata.get("song_name", "")
-          ).strip()
+          # Hard safety limits for a compact Reel-style caption.
+          if not pov:
+              pov = "Beat aayi... vibe automatically ON"
+          pov = pov[:55].rstrip()
 
-          artist = str(
-              metadata.get("artist", "")
-          ).strip()
+          # Limit to a short caption. If Gemini returns too many words,
+          # keep the most natural first 10 words.
+          words = pov.split()
+          if len(words) > 10:
+              pov = " ".join(words[:10])
 
-          keywords = [
-              x.strip()
-              for x in str(
-                  metadata.get("keywords", "")
-              ).split(",")
-              if x.strip()
+          # Use a clean bold font. GitHub Ubuntu includes DejaVu fonts.
+          font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+          font = ImageFont.truetype(font_path, 48)
+
+          # Target caption-card width. The card is intentionally NOT full-width.
+          max_text_width = 820
+          horizontal_padding = 28
+          vertical_padding = 18
+          corner_radius = 20
+
+          # Wrap based on actual pixel width so the card stays compact.
+          temp = Image.new("RGBA", (10, 10), (0, 0, 0, 0))
+          draw = ImageDraw.Draw(temp)
+
+          lines = []
+          current = ""
+
+          for word in pov.split():
+              candidate = word if not current else current + " " + word
+              bbox = draw.textbbox((0, 0), candidate, font=font)
+              width = bbox[2] - bbox[0]
+
+              if width <= max_text_width:
+                  current = candidate
+              else:
+                  if current:
+                      lines.append(current)
+                  current = word
+
+          if current:
+              lines.append(current)
+
+          lines = lines[:2]
+
+          # If the second line is still too wide, reduce the font slightly.
+          while len(lines) > 1:
+              widest = max(
+                  draw.textbbox((0, 0), line, font=font)[2]
+                  for line in lines
+              )
+              if widest <= max_text_width or font.size <= 38:
+                  break
+              font = ImageFont.truetype(font_path, font.size - 2)
+
+          line_spacing = 6
+          bboxes = [
+              draw.textbbox((0, 0), line, font=font)
+              for line in lines
           ]
 
+          text_width = max(
+              (bbox[2] - bbox[0] for bbox in bboxes),
+              default=0
+          )
+          text_height = sum(
+              bbox[3] - bbox[1]
+              for bbox in bboxes
+          ) + max(0, len(lines) - 1) * line_spacing
 
-          print("========================================")
-          print("YOUTUBE DUPLICATE CHECK")
-          print("========================================")
+          card_width = text_width + horizontal_padding * 2
+          card_height = text_height + vertical_padding * 2
 
-          print("Title:")
-          print(title)
+          # Transparent canvas containing ONLY the rounded white card.
+          card = Image.new(
+              "RGBA",
+              (card_width, card_height),
+              (0, 0, 0, 0)
+          )
+          card_draw = ImageDraw.Draw(card)
 
-          print()
-          print("Song:")
-          print(song_name)
-
-          print()
-          print("Artist:")
-          print(artist)
-
-
-          # =====================================================
-          # SOURCE VIDEO INFORMATION
-          # =====================================================
-
-          cap = cv2.VideoCapture(
-              VIDEO_FILE
+          # Reference-style: white rounded card + black text.
+          card_draw.rounded_rectangle(
+              (0, 0, card_width - 1, card_height - 1),
+              radius=corner_radius,
+              fill=(255, 255, 255, 255)
           )
 
-          fps = float(
-              cap.get(cv2.CAP_PROP_FPS)
+          y = vertical_padding
+          for index, line in enumerate(lines):
+              bbox = card_draw.textbbox((0, 0), line, font=font)
+              line_width = bbox[2] - bbox[0]
+              line_height = bbox[3] - bbox[1]
+
+              x = (card_width - line_width) // 2
+
+              card_draw.text(
+                  (x, y),
+                  line,
+                  font=font,
+                  fill=(0, 0, 0, 255)
+              )
+
+              y += line_height + line_spacing
+
+          card_path = OUTPUT_DIR / "pov_card.png"
+          card.save(card_path)
+
+          # Save the clean caption separately for metadata/debugging.
+          overlay_text = "\n".join(lines)
+          (OUTPUT_DIR / "pov.txt").write_text(
+              overlay_text,
+              encoding="utf-8"
           )
 
-          frame_count = int(
-              cap.get(cv2.CAP_PROP_FRAME_COUNT)
-          )
-
-          duration = (
-              float(frame_count) / fps
-              if fps > 0
-              else 0.0
-          )
-
-          width = int(
-              cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-          )
-
-          height = int(
-              cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-          )
-
-          cap.release()
-
-
-          # =====================================================
-          # PHASH SOURCE FRAMES
-          # =====================================================
-
-          def get_video_hashes(
-              video_path
-          ):
-
-              cap = cv2.VideoCapture(
-                  video_path
-              )
-
-              fps = float(
-                  cap.get(
-                      cv2.CAP_PROP_FPS
-                  )
-              )
-
-              frames = int(
-                  cap.get(
-                      cv2.CAP_PROP_FRAME_COUNT
-                  )
-              )
-
-              if fps <= 0 or frames <= 0:
-
-                  cap.release()
-
-                  return []
-
-
-              duration = (
-                  frames / fps
-              )
-
-
-              positions = [
-                  0.05,
-                  0.15,
-                  0.25,
-                  0.35,
-                  0.50,
-                  0.65,
-                  0.75,
-                  0.85,
-                  0.95
-              ]
-
-              hashes = []
-
-
-              for position in positions:
-
-                  timestamp = (
-                      duration * position
-                  )
-
-                  cap.set(
-                      cv2.CAP_PROP_POS_MSEC,
-                      timestamp * 1000
-                  )
-
-                  ret, frame = cap.read()
-
-                  if not ret:
-                      continue
-
-
-                  frame = cv2.cvtColor(
-                      frame,
-                      cv2.COLOR_BGR2RGB
-                  )
-
-                  image = Image.fromarray(
-                      frame
-                  )
-
-                  hashes.append(
-                      imagehash.phash(
-                          image
-                      )
-                  )
-
-
-              cap.release()
-
-              return hashes
-
-
-          source_hashes = get_video_hashes(
-              VIDEO_FILE
-          )
-
-
-          print()
-          print(
-              f"Source duration: {duration:.2f}s"
-          )
-
-          print(
-              f"Source resolution: {width}x{height}"
-          )
-
-          print(
-              f"Source frame hashes: {len(source_hashes)}"
-          )
-
-
-          # =====================================================
-          # YOUTUBE API
-          # =====================================================
-
-          youtube = build(
-              "youtube",
-              "v3",
-              developerKey=API_KEY
-          )
-
-
-          # =====================================================
-          # BUILD SEARCH QUERIES
-          # =====================================================
-
-          # Normalize text BEFORE any query construction uses it.
-          # This fixes the previous NameError where normalize() was
-          # defined later in the script but called here first.
-          def normalize(text):
-
-              text = str(text).lower()
-
-              text = re.sub(
-                  r"https?://\S+",
-                  " ",
-                  text
-              )
-
-              text = re.sub(
-                  r"[^a-z0-9\u0900-\u097f ]+",
-                  " ",
-                  text
-              )
-
-              text = re.sub(
-                  r"\s+",
-                  " ",
-                  text
-              )
-
-              return text.strip()
-
-
-          queries = []
-
-
-          def add_query(q):
-
-              q = re.sub(
-                  r"\s+",
-                  " ",
-                  str(q)
-              ).strip()
-
-              if len(q) < 3:
-                  return
-
-              if q.lower() not in [
-                  x.lower()
-                  for x in queries
-              ]:
-
-                  queries.append(q[:95])
-
-
-          # Exact title without Shorts hashtag.
-          title_query = re.sub(
-              r"#Shorts\b",
-              "",
-              title,
-              flags=re.IGNORECASE
-          ).strip()
-
-          add_query(title_query)
-
-
-          # Song + artist.
-          if song_name and artist:
-
-              add_query(
-                  f"{song_name} {artist}"
-              )
-
-
-          # Song only.
-          if song_name:
-
-              add_query(
-                  song_name
-              )
-
-              add_query(
-                  f"{song_name} dance"
-              )
-
-
-          # Title + dance.
-          add_query(
-              f"{title_query} dance"
-          )
-
-
-          # First relevant keywords.
-          for keyword in keywords[:8]:
-
-              add_query(keyword)
-
-
-          # Broader combinations to improve platform-wide search coverage.
-          # The YouTube Data API cannot literally enumerate every video on YouTube,
-          # so we use multiple independent relevance searches.
-          if song_name and not artist:
-              add_query(f"{song_name} shorts")
-
-          if title_query:
-              title_words = [
-                  w for w in normalize(title_query).split()
-                  if len(w) >= 3
-              ]
-              if len(title_words) >= 2:
-                  add_query(" ".join(title_words[:6]))
-
-          if keywords:
-              add_query(" ".join(keywords[:3]))
-
-          # Extra combinations improve discovery when YouTube uses a
-          # completely different title from the Instagram reel.
-          if song_name and keywords:
-              add_query(f"{song_name} {' '.join(keywords[:2])}")
-
-          if artist and keywords:
-              add_query(f"{artist} {' '.join(keywords[:3])}")
-
-          # Search using meaningful title words rather than relying only on
-          # Gemini's generated title.
-          if title_query:
-              words = [
-                  w for w in normalize(title_query).split()
-                  if len(w) >= 4
-              ]
-              if len(words) >= 3:
-                  add_query(" ".join(words[:3]))
-                  add_query(" ".join(words[-3:]))
-
-          print()
-          print("Search queries:")
-
-          for query in queries:
-
-              print(
-                  f"- {query}"
-              )
-
-
-          # =====================================================
-          # SEARCH YOUTUBE
-          # =====================================================
-
-          candidates = {}
-
-          # YouTube search is paginated. Search two relevance pages per query
-          # so a repost with different metadata is less likely to be missed.
-          MAX_PAGES_PER_QUERY = 2
-
-          for query in queries:
-
-              page_token = None
-
-              for page_number in range(MAX_PAGES_PER_QUERY):
-                  try:
-                      request_kwargs = {
-                          "part": "snippet",
-                          "q": query,
-                          "type": "video",
-                          "videoDuration": "short",
-                          "order": "relevance",
-                          "maxResults": 50
-                      }
-
-                      if page_token:
-                          request_kwargs["pageToken"] = page_token
-
-                      response = youtube.search().list(
-                          **request_kwargs
-                      ).execute()
-
-                  except Exception as e:
-                      print(
-                          f"Search failed for '{query}' page {page_number + 1}: {e}"
-                      )
-                      break
-
-                  for item in response.get(
-                      "items",
-                      []
-                  ):
-                      video_id = (
-                          item
-                          .get("id", {})
-                          .get("videoId")
-                      )
-
-                      if not video_id:
-                          continue
-
-                      snippet = item.get(
-                          "snippet",
-                          {}
-                      )
-
-                      candidates[video_id] = {
-                          "video_id": video_id,
-                          "title": str(snippet.get("title", "")),
-                          "description": str(snippet.get("description", "")),
-                          "channel_title": str(snippet.get("channelTitle", "")),
-                          "published_at": str(snippet.get("publishedAt", "")),
-                          "thumbnail": str(
-                              snippet.get("thumbnails", {})
-                              .get("high", {})
-                              .get("url", "")
-                          )
-                      }
-
-                  page_token = response.get("nextPageToken")
-                  if not page_token:
-                      break
-
-
-          print()
-          print(
-              f"Unique YouTube candidates found: {len(candidates)}"
-          )
-          print("Coverage: multiple independent YouTube searches across title, song, keywords and combinations.")
-          print("Note: YouTube Data API search cannot guarantee enumeration of every video on the platform.")
-
-
-          # =====================================================
-          # FETCH VIDEO DURATIONS
-          # =====================================================
-          # Duration is a supporting signal: exact reposts normally have
-          # nearly the same duration even when metadata is completely different.
-          def parse_iso_duration(value):
-              match = re.fullmatch(
-                  r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?",
-                  str(value or "")
-              )
-              if not match:
-                  return 0.0
-              return (
-                  float(match.group(1) or 0) * 3600
-                  + float(match.group(2) or 0) * 60
-                  + float(match.group(3) or 0)
-              )
-
-          candidate_ids = list(candidates.keys())
-          for offset in range(0, len(candidate_ids), 50):
-              batch = candidate_ids[offset:offset + 50]
-              try:
-                  details = youtube.videos().list(
-                      part="contentDetails",
-                      id=",".join(batch)
-                  ).execute()
-                  for item in details.get("items", []):
-                      vid = str(item.get("id", ""))
-                      if vid in candidates:
-                          candidates[vid]["duration"] = parse_iso_duration(
-                              item.get("contentDetails", {}).get("duration", "")
-                          )
-              except Exception as e:
-                  print(f"Duration lookup warning: {e}")
-
-          for candidate in candidates.values():
-              candidate.setdefault("duration", 0.0)
-
-
-          # =====================================================
-          # TEXT SIMILARITY
-          # =====================================================
-
-          normalized_source_title = normalize(
-              title_query
-          )
-
-          source_words = set(
-              normalized_source_title.split()
-          )
-
-
-          def text_similarity(
-              a,
-              b
-          ):
-
-              a = normalize(a)
-              b = normalize(b)
-
-              if not a or not b:
-                  return 0.0
-
-
-              sequence_score = (
-                  SequenceMatcher(
-                      None,
-                      a,
-                      b
-                  ).ratio()
-              )
-
-
-              b_words = set(
-                  b.split()
-              )
-
-
-              if source_words:
-
-                  overlap = len(
-                      source_words
-                      & b_words
-                  ) / max(
-                      1,
-                      len(source_words)
-                  )
-
-              else:
-
-                  overlap = 0.0
-
-
-              return float(
-                  max(
-                      sequence_score,
-                      overlap
-                  )
-              )
-
-
-          # =====================================================
-          # SCORE METADATA
-          # =====================================================
-
-          scored = []
-
-
-          for candidate in candidates.values():
-
-              title_score = text_similarity(
-                  title_query,
-                  candidate["title"]
-              )
-
-
-              description_score = text_similarity(
-                  description,
-                  candidate["description"]
-              )
-
-
-              combined = (
-                  title_score * 0.70
-                  + description_score * 0.30
-              )
-
-
-              candidate["title_score"] = float(
-                  title_score
-              )
-
-              candidate["description_score"] = float(
-                  description_score
-              )
-
-              candidate["metadata_score"] = float(
-                  combined
-              )
-
-              candidate_duration = float(candidate.get("duration", 0.0))
-              if duration > 0 and candidate_duration > 0:
-                  duration_score = min(candidate_duration, duration) / max(candidate_duration, duration)
-              else:
-                  duration_score = 0.0
-              candidate["duration_score"] = float(duration_score)
-
-
-              scored.append(
-                  candidate
-              )
-
-
-          scored.sort(
-              key=lambda x: x["metadata_score"],
-              reverse=True
-          )
-
-
-          # =====================================================
-          # THUMBNAIL PHASH
-          # =====================================================
-
-          def thumbnail_similarity(
-              source_hash,
-              url
-          ):
-
-              if not url:
-                  return 0.0
-
-
-              try:
-
-                  response = requests.get(
-                      url,
-                      timeout=15
-                  )
-
-                  if response.status_code != 200:
-                      return 0.0
-
-
-                  with Image.open(
-                      __import__(
-                          "io"
-                      ).BytesIO(
-                          response.content
-                      )
-                  ) as image:
-
-                      image = image.convert(
-                          "RGB"
-                      )
-
-                      target_hash = imagehash.phash(
-                          image
-                      )
-
-
-                  distance = int(
-                      source_hash
-                      - target_hash
-                  )
-
-                  similarity = max(
-                      0.0,
-                      1.0
-                      - (
-                          distance / 64.0
-                      )
-                  )
-
-                  return float(
-                      similarity
-                  )
-
-              except Exception:
-
-                  return 0.0
-
-
-          # =====================================================
-          # OPTIONAL VIDEO CONTENT CHECK
-          # =====================================================
-
-          def download_candidate(
-              video_id,
-              destination
-          ):
-
-              url = (
-                  "https://www.youtube.com/watch?v="
-                  + video_id
-              )
-
-
-              command = [
-                  "yt-dlp",
-
-                  "--no-playlist",
-
-                  "--quiet",
-
-                  "--no-warnings",
-
-                  "--max-filesize",
-                  "80M",
-
-                  "-f",
-                  "bv*[height<=360]+ba/"
-                  "b[height<=360]/b",
-
-                  "--merge-output-format",
-                  "mp4",
-
-                  "-o",
-                  destination,
-
-                  url
-              ]
-
-
-              try:
-
-                  result = subprocess.run(
-                      command,
-                      capture_output=True,
-                      text=True,
-                      timeout=90
-                  )
-
-                  return (
-                      result.returncode == 0
-                      and os.path.exists(
-                          destination
-                      )
-                  )
-
-              except Exception:
-
-                  return False
-
-
-          def content_similarity(
-              source_hashes,
-              candidate_video
-          ):
-
-              if not source_hashes:
-                  return 0.0
-
-
-              target_hashes = get_video_hashes(
-                  candidate_video
-              )
-
-
-              if not target_hashes:
-                  return 0.0
-
-
-              similarities = []
-
-
-              for source_hash in source_hashes:
-
-                  best = 0.0
-
-                  for target_hash in target_hashes:
-
-                      distance = int(
-                          source_hash
-                          - target_hash
-                      )
-
-                      similarity = max(
-                          0.0,
-                          1.0
-                          - (
-                              distance / 64.0
-                          )
-                      )
-
-                      best = max(
-                          best,
-                          float(similarity)
-                      )
-
-
-                  similarities.append(
-                      best
-                  )
-
-
-              return float(
-                  sum(similarities)
-                  / len(similarities)
-              )
-
-
-          # =====================================================
-          # VISUAL + CONTENT CHECK
-          # =====================================================
-
-          # IMPORTANT: Do NOT restrict video downloads to metadata-only
-          # candidates. The same reel can have a completely different
-          # YouTube title/description. First rank by BOTH metadata and
-          # thumbnail similarity, then download the strongest visual
-          # candidates and compare actual video frames.
-
-          temp_dir = tempfile.mkdtemp(
-              prefix="youtube_candidates_"
-          )
-
-
-          try:
-
-              # Calculate thumbnail similarity for ALL discovered candidates.
-              # This is the key fix for videos whose YouTube metadata differs
-              # from the Instagram metadata.
-              for candidate in candidates.values():
-
-                  thumbnail_score = 0.0
-
-                  if source_hashes and candidate.get("thumbnail"):
-
-                      scores = []
-
-                      for source_hash in source_hashes:
-                          scores.append(
-                              thumbnail_similarity(
-                                  source_hash,
-                                  candidate["thumbnail"]
-                              )
-                          )
-
-                      thumbnail_score = max(scores) if scores else 0.0
-
-                  candidate["thumbnail_score"] = float(thumbnail_score)
-
-                  metadata_score = float(candidate.get("metadata_score", 0.0))
-
-                  # Visual-first ranking. A low metadata score must NOT hide
-                  # a visually identical YouTube upload.
-                  duration_score = float(candidate.get("duration_score", 0.0))
-                  candidate["discovery_score"] = float(
-                      max(
-                          thumbnail_score,
-                          metadata_score * 0.50
-                          + thumbnail_score * 0.35
-                          + duration_score * 0.15
-                      )
-                  )
-
-
-              discovery_candidates = sorted(
-                  candidates.values(),
-                  key=lambda x: x["discovery_score"],
-                  reverse=True
-              )
-
-              print()
-              print(
-                  f"Visual discovery candidates: {len(discovery_candidates)}"
-              )
-
-              # Download more candidates than before. The exact duplicate may
-              # have weak/zero metadata similarity.
-              DOWNLOAD_LIMIT = min(50, len(discovery_candidates))
-
-              final_candidates = []
-
-              for candidate in discovery_candidates[:DOWNLOAD_LIMIT]:
-
-                  video_path = os.path.join(
-                      temp_dir,
-                      candidate["video_id"] + ".mp4"
-                  )
-
-                  # Download candidates with either useful metadata or a
-                  # useful visual signal. This avoids wasting downloads on
-                  # unrelated search results.
-                  should_download = (
-                      candidate["thumbnail_score"] >= 0.52
-                      or candidate["metadata_score"] >= 0.28
-                      or candidate["discovery_score"] >= 0.48
-                      or candidate.get("duration_score", 0.0) >= 0.96
-                  )
-
-                  if should_download and download_candidate(
-                      candidate["video_id"],
-                      video_path
-                  ):
-
-                      candidate["content_score"] = float(
-                          content_similarity(
-                              source_hashes,
-                              video_path
-                          )
-                      )
-
-                  else:
-
-                      candidate["content_score"] = 0.0
-
-
-                  metadata_score = float(candidate["metadata_score"])
-                  thumbnail_score = float(candidate["thumbnail_score"])
-                  content_score = float(candidate["content_score"])
-
-                  # Actual frame similarity gets the highest weight.
-                  duration_score = float(candidate.get("duration_score", 0.0))
-                  final_score = (
-                      metadata_score * 0.15
-                      + thumbnail_score * 0.20
-                      + content_score * 0.55
-                      + duration_score * 0.10
-                  )
-
-                  candidate["final_score"] = float(final_score)
-                  final_candidates.append(candidate)
-
-
-          finally:
-
-              shutil.rmtree(
-                  temp_dir,
-                  ignore_errors=True
-              )
-
-
-          final_candidates.sort(
-              key=lambda x: x["final_score"],
-              reverse=True
-          )
-
-
-          # =====================================================
-          # DUPLICATE DECISION
-          # =====================================================
-
-          duplicate = False
-          duplicate_candidate = None
-
-
-          for candidate in final_candidates:
-
-              metadata_score = float(candidate["metadata_score"])
-              content_score = float(candidate["content_score"])
-              thumbnail_score = float(candidate["thumbnail_score"])
-
-              # VERY STRONG: actual video frames match.
-              if content_score >= 0.82:
-                  duplicate = True
-                  duplicate_candidate = candidate
-                  break
-
-              # Strong visual + reasonable metadata.
-              if (
-                  content_score >= 0.70
-                  and thumbnail_score >= 0.70
-              ):
-                  duplicate = True
-                  duplicate_candidate = candidate
-                  break
-
-              # Same video can have a different title, so allow a strong
-              # thumbnail/content combination without title similarity.
-              if (
-                  content_score >= 0.65
-                  and thumbnail_score >= 0.82
-              ):
-                  duplicate = True
-                  duplicate_candidate = candidate
-                  break
-
-              # Metadata-only fallback. Kept intentionally conservative.
-              if (
-                  content_score == 0
-                  and metadata_score >= 0.92
-                  and thumbnail_score >= 0.88
-              ):
-                  duplicate = True
-                  duplicate_candidate = candidate
-                  break
-
-
-          # =====================================================
-          # RESULT
-          # =====================================================
-
-          import hashlib
-
-          with open(VIDEO_FILE, "rb") as vf:
-              source_sha256 = hashlib.sha256(vf.read()).hexdigest()
-
-          result = {
-              "duplicate": bool(duplicate),
-              "source": {
-                  "title": str(title),
-                  "duration": float(duration),
-                  "width": int(width),
-                  "height": int(height),
-                  "sha256": source_sha256,
-                  "phash_frames": [str(h) for h in source_hashes]
-              },
-              "candidate_count": int(
-                  len(candidates)
-              ),
-              "queries": [
-                  str(x)
-                  for x in queries
-              ],
-              "best_match": None,
-              "top_candidates": []
+          metadata["pov_text"] = pov
+          metadata["pov_overlay"] = overlay_text
+          metadata["pov_style"] = {
+              "type": "white_rounded_card_black_text",
+              "position": "top_center",
+              "max_words": 10,
+              "max_characters": 55
           }
 
-
-          if duplicate_candidate:
-
-              result[
-                  "best_match"
-              ] = {
-                  "video_id": str(
-                      duplicate_candidate[
-                          "video_id"
-                      ]
-                  ),
-                  "url": (
-                      "https://www.youtube.com/watch?v="
-                      + str(
-                          duplicate_candidate[
-                              "video_id"
-                          ]
-                      )
-                  ),
-                  "title": str(
-                      duplicate_candidate[
-                          "title"
-                      ]
-                  ),
-                  "channel": str(
-                      duplicate_candidate[
-                          "channel_title"
-                      ]
-                  ),
-                  "metadata_score": float(
-                      duplicate_candidate[
-                          "metadata_score"
-                      ]
-                  ),
-                  "thumbnail_score": float(
-                      duplicate_candidate[
-                          "thumbnail_score"
-                      ]
-                  ),
-                  "content_score": float(
-                      duplicate_candidate[
-                          "content_score"
-                      ]
-                  ),
-                  "duration_score": float(
-                      duplicate_candidate.get("duration_score", 0.0)
-                  ),
-                  "final_score": float(
-                      duplicate_candidate[
-                          "final_score"
-                      ]
-                  )
-              }
-
-
-          # Keep top 10 for debugging.
-          for candidate in final_candidates[:10]:
-
-              result[
-                  "top_candidates"
-              ].append(
-                  {
-                      "video_id": str(
-                          candidate[
-                              "video_id"
-                          ]
-                      ),
-                      "title": str(
-                          candidate[
-                              "title"
-                          ]
-                      ),
-                      "channel": str(
-                          candidate[
-                              "channel_title"
-                          ]
-                      ),
-                      "metadata_score": float(
-                          candidate[
-                              "metadata_score"
-                          ]
-                      ),
-                      "thumbnail_score": float(
-                          candidate[
-                              "thumbnail_score"
-                          ]
-                      ),
-                      "content_score": float(
-                          candidate[
-                              "content_score"
-                          ]
-                      ),
-                      "duration_score": float(
-                          candidate.get("duration_score", 0.0)
-                      ),
-                      "final_score": float(
-                          candidate[
-                              "final_score"
-                          ]
-                      )
-                  }
-              )
-
-
-          # IMPORTANT:
-          # Convert any numpy scalar values to native Python values
-          # before json.dump (prevents int64/float64 serialization errors).
-          def json_safe(value):
-              if isinstance(value, dict):
-                  return {str(k): json_safe(v) for k, v in value.items()}
-              if isinstance(value, list):
-                  return [json_safe(v) for v in value]
-              if hasattr(value, "item"):
-                  try:
-                      return value.item()
-                  except Exception:
-                      pass
-              return value
-
-          result = json_safe(result)
-
-          with open(
-              "duplicate_result.json",
-              "w",
-              encoding="utf-8"
-          ) as f:
-
+          with METADATA.open("w", encoding="utf-8") as f:
               json.dump(
-                  result,
+                  metadata,
                   f,
                   ensure_ascii=False,
                   indent=2
               )
 
-
-          print()
           print("========================================")
-          print("DUPLICATE RESULT")
+          print("AI HINGLISH POV - REFERENCE STYLE")
           print("========================================")
-
-          print(
-              json.dumps(
-                  result,
-                  ensure_ascii=False,
-                  indent=2
-              )
-          )
-
-
-          if duplicate:
-
-              print()
-              print(
-                  "🚫 DUPLICATE DETECTED"
-              )
-
-              if duplicate_candidate:
-
-                  print(
-                      "YouTube URL:"
-                  )
-
-                  print(
-                      "https://www.youtube.com/watch?v="
-                      + duplicate_candidate[
-                          "video_id"
-                      ]
-                  )
-
-                  print(
-                      "Title:"
-                  )
-
-                  print(
-                      duplicate_candidate[
-                          "title"
-                      ]
-                  )
-
-              # GitHub Actions output.
-              with open(
-                  os.environ["GITHUB_OUTPUT"],
-                  "a"
-              ) as f:
-
-                  f.write(
-                      "duplicate=true\n"
-                  )
-
-          else:
-
-              print()
-              print(
-                  "✅ NO STRONG DUPLICATE FOUND"
-              )
-
-              with open(
-                  os.environ["GITHUB_OUTPUT"],
-                  "a"
-              ) as f:
-
-                  f.write(
-                      "duplicate=false\n"
-                  )
-
+          print(overlay_text)
+          print("Card:", card_path)
+          print("========================================")
           PY
 
-          python3 youtube_duplicate_check.py
+          echo "Adding clean rounded POV card to the video..."
+
+          ffmpeg \
+            -y \
+            -i output/youtube_short.mp4 \
+            -i output/pov_card.png \
+            -filter_complex "[1:v]format=rgba[card];[0:v][card]overlay=x=(main_w-overlay_w)/2:y=90:format=auto" \
+            -c:v libx264 \
+            -preset veryfast \
+            -crf 20 \
+            -c:a copy \
+            -movflags +faststart \
+            output/youtube_short_pov.mp4
+
+          mv output/youtube_short_pov.mp4 output/youtube_short.mp4
+
+          echo "POV overlay added successfully."
+          echo "Style: white rounded rectangle + black text + top center"
+          ls -lh output/youtube_short.mp4 output/pov.txt output/pov_card.png
 
 
       # =========================================================
-      # 13. CHECK DUPLICATE RESULT
-      # =========================================================
-      - name: Check duplicate result
-        run: |
-
-          echo "========================================"
-          echo "DUPLICATE DECISION"
-          echo "========================================"
-
-          cat duplicate_result.json
-
-          echo ""
-          echo "========================================"
-
-          if [ "${{ steps.duplicate.outputs.duplicate }}" = "true" ]; then
-
-            echo "🚫 DUPLICATE FOUND."
-            echo "Instagram Reel will NOT be uploaded."
-            echo "Workflow will stop safely."
-
-            exit 0
-
-          else
-
-            echo "✅ NO STRONG DUPLICATE FOUND."
-            echo "Proceeding to YouTube upload."
-
-          fi
-
-
-      # =========================================================
-      # 14. PREPARE YOUTUBE OAUTH
+      # 13. PREPARE YOUTUBE OAUTH
       # =========================================================
       - name: Prepare YouTube OAuth credentials
-        if: steps.duplicate.outputs.duplicate != 'true'
         env:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
@@ -2158,10 +1115,9 @@ jobs:
 
 
       # =========================================================
-      # 15. UPLOAD TO YOUTUBE
+      # 14. UPLOAD TO YOUTUBE
       # =========================================================
       - name: Upload Short to YouTube
-        if: steps.duplicate.outputs.duplicate != 'true'
         env:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
@@ -2358,10 +1314,9 @@ jobs:
           python3 upload_youtube.py
 
       # =========================================================
-      # 16. CHECK YOUTUBE UPLOAD
+      # 15. CHECK YOUTUBE UPLOAD
       # =========================================================
       - name: Check YouTube upload result
-        if: steps.duplicate.outputs.duplicate != 'true'
         run: |
 
           echo "========================================"
@@ -2372,7 +1327,7 @@ jobs:
 
 
       # =========================================================
-      # 17. SAVE OUTPUTS
+      # 16. SAVE OUTPUTS
       # =========================================================
       - name: Upload processed videos and metadata
         uses: actions/upload-artifact@v4
@@ -2381,32 +1336,24 @@ jobs:
           path: |
             output/youtube_short.mp4
             metadata.json
-            duplicate_result.json
+            output/pov.txt
             youtube_upload_result.json
             best_section.txt
           if-no-files-found: ignore
 
 
       # =========================================================
-      # 18. SUCCESS
+      # 17. SUCCESS
       # =========================================================
       - name: Test successful
         run: |
 
           echo "========================================"
           echo "REELTOTUBE PROCESSOR COMPLETE"
+          echo "YouTube duplicate checking: DISABLED"
           echo "========================================"
 
-          if [ "${{ steps.duplicate.outputs.duplicate }}" = "true" ]; then
-
-            echo "STATUS: DUPLICATE"
-            echo "UPLOAD: SKIPPED"
-
-          else
-
-            echo "STATUS: PROCESSED"
-            echo "UPLOAD: COMPLETED"
-
-          fi
+          echo "STATUS: PROCESSED"
+          echo "UPLOAD: COMPLETED"
 
           echo "========================================"
