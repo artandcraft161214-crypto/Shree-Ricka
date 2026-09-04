@@ -485,7 +485,12 @@ jobs:
           )
 
 
-          while True:
+          # Wait for Gemini to finish processing the uploaded video.
+          # Timeout prevents the GitHub Action from waiting forever.
+          MAX_PROCESSING_WAIT = 300
+          waited = 0
+
+          while waited < MAX_PROCESSING_WAIT:
 
               video_file = client.files.get(
                   name=video_file.name
@@ -510,6 +515,13 @@ jobs:
                   )
 
               time.sleep(5)
+              waited += 5
+
+          else:
+              raise RuntimeError(
+                  "Gemini video processing timed out after "
+                  f"{MAX_PROCESSING_WAIT} seconds."
+              )
 
 
           prompt = r"""
@@ -653,40 +665,149 @@ jobs:
           """
 
 
-          response = client.models.generate_content(
-              model="gemini-3.6-flash",
-              contents=[
-                  video_file,
-                  prompt
-              ]
-          )
+          # ==================================================
+          # GEMINI GENERATION WITH RETRY + FALLBACK
+          # ==================================================
+
+          response = None
+          last_error = None
+          MAX_ATTEMPTS = 5
+
+          for attempt in range(MAX_ATTEMPTS):
+
+              try:
+
+                  print("")
+                  print("========================================")
+                  print(
+                      f"Gemini generation attempt "
+                      f"{attempt + 1}/{MAX_ATTEMPTS}"
+                  )
+                  print("========================================")
+
+                  response = client.models.generate_content(
+                      model="gemini-3.6-flash",
+                      contents=[
+                          video_file,
+                          prompt
+                      ]
+                  )
+
+                  if not response or not response.text:
+                      raise RuntimeError(
+                          "Gemini returned an empty response."
+                      )
+
+                  print("Gemini generation successful.")
+                  break
+
+              except Exception as error:
+
+                  response = None
+                  last_error = error
+
+                  print(
+                      f"Gemini attempt {attempt + 1} failed: {error}"
+                  )
+
+                  if attempt < MAX_ATTEMPTS - 1:
+
+                      wait_time = min(
+                          15 * (2 ** attempt),
+                          120
+                      )
+
+                      print(
+                          f"Waiting {wait_time} seconds before retry..."
+                      )
+
+                      time.sleep(wait_time)
 
 
-          text = response.text.strip()
+          def fallback_metadata():
+              return {
+                  "title": "Amazing Dance Performance #Shorts",
+                  "description": (
+                      "Enjoy this energetic dance performance and the "
+                      "amazing moves. Watch till the end and share your "
+                      "thoughts!"
+                  ),
+                  "tags": (
+                      "dance, dance performance, amazing dance, "
+                      "dance video, viral dance, dance shorts, "
+                      "youtube shorts, instagram reel, dance moves, "
+                      "trending dance"
+                  ),
+                  "hashtags": (
+                      "#Shorts #YouTubeShorts #Dance "
+                      "#DancePerformance #DanceVideo #ViralDance "
+                      "#Trending #Reels"
+                  ),
+                  "song_name": "",
+                  "artist": "",
+                  "best_moment": "Watch the strongest dance sequence.",
+                  "category": "Entertainment",
+                  "keywords": (
+                      "dance, dance performance, dance video, "
+                      "dance moves, viral dance, trending dance, "
+                      "youtube shorts, instagram reel, "
+                      "short dance video, performance"
+                  ),
+                  "pov_text": "Steps clean hain, vibe alag hi hai"
+              }
 
 
-          # Remove markdown JSON fences if Gemini adds them.
-          text = re.sub(
-              r"^```json\s*",
-              "",
-              text,
-              flags=re.IGNORECASE
-          )
+          # ==================================================
+          # NORMAL GEMINI RESPONSE OR EMERGENCY FALLBACK
+          # ==================================================
 
-          text = re.sub(
-              r"^```\s*",
-              "",
-              text
-          )
+          if response is None:
 
-          text = re.sub(
-              r"\s*```$",
-              "",
-              text
-          )
+              print("")
+              print("========================================")
+              print("GEMINI UNAVAILABLE")
+              print("USING EMERGENCY FALLBACK METADATA")
+              print("========================================")
+              print(f"Last Gemini error: {last_error}")
 
+              data = fallback_metadata()
 
-          data = json.loads(text)
+          else:
+
+              text = response.text.strip()
+
+              # Remove markdown JSON fences if Gemini adds them.
+              text = re.sub(
+                  r"^```json\s*",
+                  "",
+                  text,
+                  flags=re.IGNORECASE
+              )
+
+              text = re.sub(
+                  r"^```\s*",
+                  "",
+                  text
+              )
+
+              text = re.sub(
+                  r"\s*```$",
+                  "",
+                  text
+              )
+
+              try:
+                  data = json.loads(text)
+
+              except json.JSONDecodeError as error:
+
+                  print(
+                      "Gemini returned invalid JSON. "
+                      "Using emergency fallback metadata."
+                  )
+                  print(f"JSON error: {error}")
+
+                  data = fallback_metadata()
 
 
           required = [
